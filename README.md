@@ -88,7 +88,7 @@ python -m http.server 8080
 ```
 2048-game-web/
 ├── index.html    # Game layout and HTML structure
-├── style.css     # Styling, tile colours, animations, responsive design
+├── style.css     # Styling, tile colors, animations, responsive design
 ├── script.js     # All game logic (movement, merging, scoring, events)
 ├── README.md     # This file
 ├── LICENSE       # MIT License

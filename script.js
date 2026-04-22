@@ -351,7 +351,7 @@ function renderBoard(animate, newIdx) {
   });
 }
 
-/** Map a tile value to its CSS colour class. */
+/** Map a tile value to its CSS color class. */
 function tileClass(value) {
   const classes = {
     2: 'tile-2', 4: 'tile-4', 8: 'tile-8', 16: 'tile-16',
