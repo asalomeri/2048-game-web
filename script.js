@@ -7,8 +7,15 @@
  * The rendering approach:
  *  - 16 static <div class="cell"> elements provide the grey background slots.
  *  - Tile <div> elements are absolutely positioned over the board using
- *    CSS custom properties (--row, --col) and computed percentages, so
- *    transitions animate them smoothly between positions.
+ *    computed pixel offsets so CSS transitions animate them smoothly.
+ *
+ * New in this version:
+ *  - Dark Mode toggle (persisted to localStorage)
+ *  - Undo (one step back)
+ *  - WASD keyboard support
+ *  - R key → new game
+ *  - Z key → undo
+ *  - Score delta animation (+XX pop-up)
  */
 
 'use strict';
@@ -16,30 +23,67 @@
 /* ============================================================
    Constants
    ============================================================ */
-const GRID_SIZE = 4;
-const CELL_COUNT = GRID_SIZE * GRID_SIZE;
-const BEST_SCORE_KEY = 'bestScore';
-const WIN_VALUE = 2048;
+const GRID_SIZE       = 4;
+const CELL_COUNT      = GRID_SIZE * GRID_SIZE;
+const BEST_SCORE_KEY  = 'bestScore';
+const DARK_MODE_KEY   = 'darkMode';
+const WIN_VALUE       = 2048;
 
 /* ============================================================
    State
    ============================================================ */
-let board = [];        // flat array [0..15]
-let score = 0;
-let bestScore = 0;
-let gameOver = false;
-let won = false;
+let board       = [];   // flat array [0..15]
+let score       = 0;
+let bestScore   = 0;
+let gameOver    = false;
+let won         = false;
 let keepPlaying = false;
 
+// Undo snapshots (one level deep)
+let prevBoard   = null;
+let prevScore   = null;
+
 /* DOM references */
-const boardEl         = document.getElementById('board');
-const scoreEl         = document.getElementById('score');
-const bestScoreEl     = document.getElementById('best-score');
-const gameMessageEl   = document.getElementById('game-message');
-const messageTextEl   = document.getElementById('message-text');
-const newGameBtn      = document.getElementById('new-game-btn');
-const keepPlayingBtn  = document.getElementById('keep-playing-btn');
-const tryAgainBtn     = document.getElementById('try-again-btn');
+const boardEl        = document.getElementById('board');
+const scoreEl        = document.getElementById('score');
+const bestScoreEl    = document.getElementById('best-score');
+const scoreDeltaEl   = document.getElementById('score-delta');
+const gameMessageEl  = document.getElementById('game-message');
+const messageTextEl  = document.getElementById('message-text');
+const newGameBtn     = document.getElementById('new-game-btn');
+const keepPlayingBtn = document.getElementById('keep-playing-btn');
+const tryAgainBtn    = document.getElementById('try-again-btn');
+const darkModeBtn    = document.getElementById('dark-mode-btn');
+const undoBtn        = document.getElementById('undo-btn');
+
+/* ============================================================
+   Dark Mode
+   ============================================================ */
+
+function applyTheme(dark) {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  darkModeBtn.textContent = dark ? '☀️' : '🌙';
+  darkModeBtn.title       = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  localStorage.setItem(DARK_MODE_KEY, dark ? '1' : '0');
+}
+
+function toggleDarkMode() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  applyTheme(!isDark);
+}
+
+// Initialise theme from saved preference or system preference
+(function initTheme() {
+  const saved = localStorage.getItem(DARK_MODE_KEY);
+  if (saved !== null) {
+    applyTheme(saved === '1');
+  } else {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(prefersDark);
+  }
+})();
+
+darkModeBtn.addEventListener('click', toggleDarkMode);
 
 /* ============================================================
    Initialisation
@@ -57,18 +101,20 @@ function buildBoardCells() {
 
 /** Start / restart a new game. */
 function initGame() {
-  board = new Array(CELL_COUNT).fill(0);
-  score = 0;
-  gameOver = false;
-  won = false;
+  board       = new Array(CELL_COUNT).fill(0);
+  score       = 0;
+  gameOver    = false;
+  won         = false;
   keepPlaying = false;
+  prevBoard   = null;
+  prevScore   = null;
 
   bestScore = parseInt(localStorage.getItem(BEST_SCORE_KEY) || '0', 10);
 
-  updateScoreDisplay();
+  updateScoreDisplay(0);
   clearMessage();
+  updateUndoButton();
 
-  // Add two starter tiles
   addRandomTile();
   addRandomTile();
 
@@ -82,7 +128,7 @@ function initGame() {
 /** Place a new tile (90 % chance of 2, 10 % chance of 4) in a random empty cell. */
 function addRandomTile() {
   const empty = getEmptyCells();
-  if (empty.length === 0) return;
+  if (empty.length === 0) return undefined;
   const idx = empty[Math.floor(Math.random() * empty.length)];
   board[idx] = Math.random() < 0.9 ? 2 : 4;
   return idx;
@@ -103,87 +149,114 @@ function getEmptyCells() {
 
 /**
  * Slide & merge a single row/column array of values (left-to-right).
- * Returns { line, gained } where line is the new array and gained is
- * the score earned from merges in this line.
+ * Returns { line, gained, mergedIndices }.
  */
 function slideLine(line) {
-  // Remove zeros
   let values = line.filter(v => v !== 0);
   let gained = 0;
+  const mergedIndices = [];
 
-  // Merge adjacent equal values (left-to-right, each cell merges once)
   for (let i = 0; i < values.length - 1; i++) {
     if (values[i] === values[i + 1]) {
       values[i] *= 2;
       gained += values[i];
+      mergedIndices.push(i);
       values.splice(i + 1, 1);
     }
   }
 
-  // Pad with zeros on the right
   while (values.length < GRID_SIZE) values.push(0);
-  return { line: values, gained };
+  return { line: values, gained, mergedIndices };
 }
 
 /**
  * Apply a move in the given direction.
- * Returns true if any tile moved or merged (i.e. the board changed).
+ * Returns true if the board changed.
  */
 function move(direction) {
   if (gameOver) return false;
   if (won && !keepPlaying) return false;
 
-  const prevBoard = board.slice();
-  let totalGained = 0;
+  const snapshot      = board.slice();
+  const snapshotScore = score;
+
+  const prevBoardState  = board.slice();
+  let totalGained       = 0;
+  const mergedPositions = [];
 
   if (direction === 'left') {
     for (let r = 0; r < GRID_SIZE; r++) {
-      const row = getRow(r);
-      const { line, gained } = slideLine(row);
+      const { line, gained, mergedIndices } = slideLine(getRow(r));
       setRow(r, line);
       totalGained += gained;
+      mergedIndices.forEach(c => mergedPositions.push(r * GRID_SIZE + c));
     }
   } else if (direction === 'right') {
     for (let r = 0; r < GRID_SIZE; r++) {
       const row = getRow(r).reverse();
-      const { line, gained } = slideLine(row);
+      const { line, gained, mergedIndices } = slideLine(row);
       setRow(r, line.reverse());
       totalGained += gained;
+      mergedIndices.forEach(i => mergedPositions.push(r * GRID_SIZE + (GRID_SIZE - 1 - i)));
     }
   } else if (direction === 'up') {
     for (let c = 0; c < GRID_SIZE; c++) {
-      const col = getCol(c);
-      const { line, gained } = slideLine(col);
+      const { line, gained, mergedIndices } = slideLine(getCol(c));
       setCol(c, line);
       totalGained += gained;
+      mergedIndices.forEach(r => mergedPositions.push(r * GRID_SIZE + c));
     }
   } else if (direction === 'down') {
     for (let c = 0; c < GRID_SIZE; c++) {
       const col = getCol(c).reverse();
-      const { line, gained } = slideLine(col);
+      const { line, gained, mergedIndices } = slideLine(col);
       setCol(c, line.reverse());
       totalGained += gained;
+      mergedIndices.forEach(i => mergedPositions.push((GRID_SIZE - 1 - i) * GRID_SIZE + c));
     }
   }
 
-  const changed = board.some((v, i) => v !== prevBoard[i]);
+  const changed = board.some((v, i) => v !== prevBoardState[i]);
   if (!changed) return false;
 
-  // Update score
+  prevBoard = snapshot;
+  prevScore = snapshotScore;
+  updateUndoButton();
+
   score += totalGained;
-  updateScoreDisplay();
+  updateScoreDisplay(totalGained);
 
-  // Spawn a new tile
   const newIdx = addRandomTile();
+  renderBoard(/* animate= */ true, newIdx, mergedPositions);
 
-  // Render
-  renderBoard(/* animate= */ true, newIdx);
-
-  // Check win / lose
   checkWin();
   if (!won || keepPlaying) checkLose();
 
   return true;
+}
+
+/* ============================================================
+   Undo
+   ============================================================ */
+
+function undo() {
+  if (prevBoard === null || gameOver) return;
+  board       = prevBoard.slice();
+  score       = prevScore;
+  gameOver    = false;
+  won         = board.includes(WIN_VALUE);
+  keepPlaying = false;
+  prevBoard   = null;
+  prevScore   = null;
+
+  updateScoreDisplay(0);
+  clearMessage();
+  updateUndoButton();
+  renderBoard(false);
+}
+
+function updateUndoButton() {
+  undoBtn.disabled = (prevBoard === null);
 }
 
 /* ============================================================
@@ -233,9 +306,8 @@ function checkWin() {
 }
 
 function checkLose() {
-  if (getEmptyCells().length > 0) return; // still have empty cells
+  if (getEmptyCells().length > 0) return;
 
-  // Check for any possible merge horizontally or vertically
   for (let r = 0; r < GRID_SIZE; r++) {
     for (let c = 0; c < GRID_SIZE; c++) {
       const idx = r * GRID_SIZE + c;
@@ -245,16 +317,15 @@ function checkLose() {
     }
   }
 
-  // No moves available
   gameOver = true;
-  showMessage('Game Over!', 'over');
+  showMessage('Game Over! 😞', 'over');
 }
 
 /* ============================================================
    Score Display
    ============================================================ */
 
-function updateScoreDisplay() {
+function updateScoreDisplay(gained) {
   scoreEl.textContent = score;
 
   if (score > bestScore) {
@@ -263,13 +334,16 @@ function updateScoreDisplay() {
   }
   bestScoreEl.textContent = bestScore;
 
-  // Tiny bump animation
-  [scoreEl, bestScoreEl].forEach(el => {
-    el.classList.remove('bump');
-    void el.offsetWidth; // force reflow
-    el.classList.add('bump');
-    el.addEventListener('animationend', () => el.classList.remove('bump'), { once: true });
-  });
+  scoreEl.classList.remove('bump');
+  void scoreEl.offsetWidth;
+  scoreEl.classList.add('bump');
+
+  if (gained > 0 && scoreDeltaEl) {
+    scoreDeltaEl.textContent = '+' + gained;
+    scoreDeltaEl.classList.remove('pop');
+    void scoreDeltaEl.offsetWidth;
+    scoreDeltaEl.classList.add('pop');
+  }
 }
 
 /* ============================================================
@@ -282,18 +356,18 @@ function showMessage(text, state) {
 
   if (state === 'won') {
     keepPlayingBtn.style.display = 'inline-block';
-    tryAgainBtn.style.display = 'inline-block';
+    tryAgainBtn.style.display   = 'inline-block';
   } else if (state === 'over') {
     keepPlayingBtn.style.display = 'none';
-    tryAgainBtn.style.display = 'inline-block';
+    tryAgainBtn.style.display   = 'inline-block';
   }
 }
 
 function clearMessage() {
   messageTextEl.textContent = 'Good luck! 🎮';
-  gameMessageEl.className = 'game-message';
+  gameMessageEl.className   = 'game-message';
   keepPlayingBtn.style.display = 'none';
-  tryAgainBtn.style.display = 'none';
+  tryAgainBtn.style.display    = 'none';
 }
 
 /* ============================================================
@@ -302,24 +376,19 @@ function clearMessage() {
 
 /**
  * Re-render all tiles over the static background cells.
- * Each tile is absolutely positioned using percentage offsets derived
- * from the cell grid so CSS transitions animate movement.
  *
- * @param {boolean} animate - If true, apply appear/merge classes.
- * @param {number|undefined} newIdx - Index of the newly spawned tile (gets appear animation).
+ * @param {boolean}   animate          - Apply appear/merge CSS classes.
+ * @param {number}    newIdx           - Index of newly spawned tile.
+ * @param {number[]}  mergedPositions  - Board indices of merged tiles.
  */
-function renderBoard(animate, newIdx) {
-  // Remove existing tile elements (leave cell backgrounds)
+function renderBoard(animate, newIdx, mergedPositions = []) {
   boardEl.querySelectorAll('.tile').forEach(t => t.remove());
 
-  // Compute cell size as a fraction of board width.
-  // The board uses CSS grid with gap; we replicate the layout via JS.
-  // We use CSS variables on the board for gap/padding info via getComputedStyle.
-  const boardRect = boardEl.getBoundingClientRect();
+  const boardRect  = boardEl.getBoundingClientRect();
   const boardStyle = getComputedStyle(boardEl);
-  const gap = parseFloat(boardStyle.gap) || 12;
-  const totalGap = gap * (GRID_SIZE - 1);
-  const cellSize = (boardRect.width - totalGap) / GRID_SIZE;
+  const gap        = parseFloat(boardStyle.gap) || 12;
+  const totalGap   = gap * (GRID_SIZE - 1);
+  const cellSize   = (boardRect.width - totalGap) / GRID_SIZE;
 
   board.forEach((value, idx) => {
     if (value === 0) return;
@@ -330,20 +399,18 @@ function renderBoard(animate, newIdx) {
     const tile = document.createElement('div');
     tile.className = `tile ${tileClass(value)}`;
 
-    // Position
-    tile.style.width  = `${cellSize}px`;
-    tile.style.height = `${cellSize}px`;
-    tile.style.top    = `${row * (cellSize + gap)}px`;
-    tile.style.left   = `${col * (cellSize + gap)}px`;
-
-    // Font size scales with cell size and value length
+    tile.style.width    = `${cellSize}px`;
+    tile.style.height   = `${cellSize}px`;
+    tile.style.top      = `${row * (cellSize + gap)}px`;
+    tile.style.left     = `${col * (cellSize + gap)}px`;
     tile.style.fontSize = tileFontSize(value, cellSize);
-
-    tile.textContent = value;
+    tile.textContent    = value;
 
     if (animate) {
       if (idx === newIdx) {
         tile.classList.add('tile-new');
+      } else if (mergedPositions.includes(idx)) {
+        tile.classList.add('tile-merged');
       }
     }
 
@@ -364,8 +431,7 @@ function tileClass(value) {
 /** Return an appropriate font-size string for a tile. */
 function tileFontSize(value, cellSize) {
   const digits = String(value).length;
-  // Scale: 1-2 digits → 40% of cell, more digits → proportionally smaller
-  const ratio = Math.max(0.22, 0.42 - (digits - 1) * 0.065);
+  const ratio  = Math.max(0.22, 0.42 - (digits - 1) * 0.065);
   return `${Math.floor(cellSize * ratio)}px`;
 }
 
@@ -373,21 +439,37 @@ function tileFontSize(value, cellSize) {
    Event Listeners
    ============================================================ */
 
-// Keyboard
+// Keyboard: Arrow keys + WASD + Z (undo) + R (new game)
 document.addEventListener('keydown', e => {
-  const map = {
-    ArrowLeft: 'left', ArrowRight: 'right',
-    ArrowUp: 'up', ArrowDown: 'down',
+  const dirMap = {
+    ArrowLeft: 'left',  ArrowRight: 'right',
+    ArrowUp:   'up',    ArrowDown:  'down',
+    a: 'left', d: 'right', w: 'up', s: 'down',
+    A: 'left', D: 'right', W: 'up', S: 'down',
   };
-  const direction = map[e.key];
+
+  const direction = dirMap[e.key];
   if (direction) {
     e.preventDefault();
     move(direction);
+    return;
+  }
+
+  if (e.key === 'z' || e.key === 'Z') {
+    e.preventDefault();
+    undo();
+    return;
+  }
+
+  if (e.key === 'r' || e.key === 'R') {
+    e.preventDefault();
+    initGame();
   }
 });
 
 // Buttons
 newGameBtn.addEventListener('click', initGame);
+undoBtn.addEventListener('click', undo);
 keepPlayingBtn.addEventListener('click', () => {
   keepPlaying = true;
   clearMessage();

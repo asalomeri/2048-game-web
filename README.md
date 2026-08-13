@@ -8,7 +8,7 @@ An interactive browser-based implementation of the classic **2048 puzzle game**,
 
 ## 🕹️ How to Play
 
-1. Use the **arrow keys** (↑ ↓ ← →) on your keyboard to move all tiles simultaneously.
+1. Use the **arrow keys** (↑ ↓ ← →) or **WASD** on your keyboard to move all tiles simultaneously.
 2. When two tiles with the **same number** collide, they **merge into one** with their combined value.
 3. A new tile (2 or 4) appears after every valid move.
 4. Keep merging tiles until you reach the **2048** tile to win!
@@ -27,8 +27,11 @@ Before move (→):       After move (→):
 ## ✨ Features
 
 - **4×4 grid** gameplay with smooth animated tiles
-- **Arrow key** controls for desktop
+- **Arrow keys + WASD** controls for desktop
 - **Touch / swipe** controls for mobile devices
+- **Undo** — take back your last move (button or `Z` key)
+- **Dark Mode** — toggle between light and dark themes (persisted)
+- **Score delta animation** — see how many points you earned per merge
 - **Score tracking** with real-time updates
 - **Best score** persistence via `localStorage`
 - **Win detection** — congratulations message when you hit 2048
@@ -73,13 +76,15 @@ python -m http.server 8080
 
 ## 🎮 Controls
 
-| Action | Keyboard | Mobile |
-|--------|----------|--------|
-| Move Left  | `←` Arrow | Swipe Left  |
-| Move Right | `→` Arrow | Swipe Right |
-| Move Up    | `↑` Arrow | Swipe Up    |
-| Move Down  | `↓` Arrow | Swipe Down  |
-| New Game   | Click button | Tap button |
+| Action     | Keyboard           | Mobile        |
+|------------|--------------------|---------------|
+| Move Left  | `←` or `A`         | Swipe Left    |
+| Move Right | `→` or `D`         | Swipe Right   |
+| Move Up    | `↑` or `W`         | Swipe Up      |
+| Move Down  | `↓` or `S`         | Swipe Down    |
+| Undo       | `Z`                | Tap ↩ button  |
+| New Game   | `R` or click button| Tap button    |
+| Dark Mode  | Click 🌙 button    | Tap 🌙 button |
 
 ---
 
@@ -88,8 +93,8 @@ python -m http.server 8080
 ```
 2048-game-web/
 ├── index.html    # Game layout and HTML structure
-├── style.css     # Styling, tile colors, animations, responsive design
-├── script.js     # All game logic (movement, merging, scoring, events)
+├── style.css     # Styling, tile colors, animations, dark mode, responsive design
+├── script.js     # All game logic (movement, merging, scoring, undo, dark mode, events)
 ├── README.md     # This file
 ├── LICENSE       # MIT License
 └── .gitignore    # Standard web project gitignore
