@@ -47,7 +47,9 @@ Before move (→):       After move (→):
 
 ### Play Online
 
-Simply open `index.html` in any modern web browser — no server or build step required.
+Play on GitHub Pages: https://asalomeri.github.io/2048-game-web/
+
+You can also open `index.html` in any modern web browser — no server or build step required.
 
 ### Run Locally
 
